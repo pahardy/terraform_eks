@@ -1,6 +1,6 @@
 #AWS region
 variable "aws_region" {
-  type = "string"
+  type = string
   default = "ca-central-1"
 }
 
