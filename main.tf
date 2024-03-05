@@ -10,6 +10,27 @@ data "aws_subnets" "default_subnets" {
   }
 }
 
+module "vpc" {
+  source = "terraform-aws-modules/vpc/aws"
+  version = "5.0.0"
+
+  name = "terraform-vpc"
+  cidr = var.vpc_cidr
+
+  azs = ["ca-central-1a", "ca-central-1b", "ca-central-1d"]
+  private_subnets = ["10.0.1.0/24", "10.0.2.0/24", "10.0.3.0/24"]
+  public_subnets = ["10.0.4.0/24", "10.0.5.0/24", "10.0.6.0/24"]
+
+  enable_nat_gateway = true
+  single_nat_gateway = true
+  enable_dns_hostnames = true
+
+  tags = {
+    Environment = "terraform"
+    Owner = "Patrick"
+  }
+}
+
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
   version = "20.5.0"
@@ -32,8 +53,8 @@ module "eks" {
     }
   }
 
-  vpc_id = data.aws_vpc.default.id
-  subnet_ids = data.aws_subnets.default_subnets.ids
+  vpc_id = module.vpc.vpc_id
+  subnet_ids = module.vpc.private_subnets
 
   eks_managed_node_groups = {
     nodegroup1 = {
