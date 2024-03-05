@@ -1,15 +1,9 @@
-#obtain the default VPC id
-data "aws_vpc" "default" {
-  default = true
-}
+/*
+Creates a VPC, EKS cluster, and EBS addon for persistent storage. Large contribution
+from Terraform tutorial site: https://developer.hashicorp.com/terraform/tutorials/kubernetes/eks
+*/
 
-data "aws_subnets" "default_subnets" {
-  filter {
-    name   = "vpc-id"
-    values = [ data.aws_vpc.default.id ]
-  }
-}
-
+#Create a separate VPC for the EKS cluster
 module "vpc" {
   source = "terraform-aws-modules/vpc/aws"
   version = "5.0.0"
@@ -31,6 +25,7 @@ module "vpc" {
   }
 }
 
+#Create the EKS cluster using the Terraform EKS module
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
   version = "20.5.0"
@@ -70,4 +65,81 @@ module "eks" {
     Environment = "terraform"
     Owner = "Patrick"
   }
+}
+
+/*
+Add the EBS addon for persistent storage for pods/containers to be hosted in the EKS cluster
+Large contribution here from Stacksimplify (via Udemy course):
+https://github.com/stacksimplify/terraform-on-aws-eks/blob/main/18-EBS-CSI-Install-using-EKS-AddOn/02-ebs-addon-terraform-manifests/c4-01-ebs-csi-datasources.tf
+*/
+
+#get the EBS CSI IAM policy
+data "http" "ebs_csi_iam_policy" {
+  url = "https://raw.githubusercontent.com/kubernetes-sigs/aws-ebs-csi-driver/master/docs/example-iam-policy.json"
+
+  # Optional request headers
+  request_headers = {
+    Accept = "application/json"
+  }
+}
+
+#Acquiring the policy from AWS
+resource "aws_iam_policy" "ebs_csi_iam_policy" {
+  name = "${var.aws_region}-AmazonEKS_EBS_CSI_Driver_Policy"
+  description = "EBS CSI IAM Policy for the EKS cluster"
+  path = "/"
+  policy = data.http.ebs_csi_iam_policy.response_body
+}
+
+output "ebs_csi_iam_policy_arn" {
+  value = aws_iam_policy.ebs_csi_iam_policy.arn
+}
+
+#Create an IAM role and associate it with the policy created above
+resource "aws_iam_role" "ebs_csi_iam_role" {
+  name = "${var.aws_region}-ebs-csi-iam-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRoleWithWebIdentity"
+        Effect = "Allow"
+        Sid    = ""
+        Principal = {
+          Federated = "${module.eks.oidc_provider_arn}"
+        }
+        Condition = {
+          StringEquals = {
+            "${module.eks.oidc_provider_arn}:sub": "system:serviceaccount:kube-system:ebs-csi-controller-sa"
+          }
+        }
+
+      },
+    ]
+  })
+
+  tags = {
+    Environment = "terraform"
+    Owner = "Patrick"
+  }
+}
+
+# Associate EBS CSI IAM Policy to EBS CSI IAM Role
+resource "aws_iam_role_policy_attachment" "ebs_csi_iam_role_policy_attach" {
+  policy_arn = aws_iam_policy.ebs_csi_iam_policy.arn
+  role       = aws_iam_role.ebs_csi_iam_role.name
+}
+
+output "ebs_csi_iam_role_arn" {
+  description = "EBS CSI IAM Role ARN"
+  value = aws_iam_role.ebs_csi_iam_role.arn
+}
+
+#Installation of EBS CSI addon
+resource "aws_eks_addon" "ebs_eks_addon" {
+  depends_on = [aws_iam_role_policy_attachment.ebs_csi_iam_role_policy_attach]
+  cluster_name = module.eks.cluster_name
+  addon_name   = "aws-ebs-csi-driver"
+  service_account_role_arn = aws_iam_role.ebs_csi_iam_role.arn 
 }
